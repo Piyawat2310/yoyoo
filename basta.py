@@ -5,24 +5,6 @@ from airflow.operators.python import PythonOperator
 
 DAG_ID = "basta1"
 
-# def write_to_txt_file():
-#     with open('/opt/airflow/dags/low_stock_items.txt', 'w') as file:
-#         file.write('halooo,airflow')
-
-# def write_to_txt_file(**context):
-#     output_file_path = "/opt/airflow/dags/low_stock_items.txt"
-#     records = context["ti"].xcom_pull(task_ids="get_low_stock_items")
-#     with open(output_file_path, "w") as file:
-#         if records:
-#             file.write("Low Stock Items:\n")
-#             for record in records:
-#                 # จัดรูปแบบข้อความ
-#                 item_id, item_name, category, stock_quantity, price_per_unit = record
-#                 file.write(f"Item ID: {item_id}, Name: {item_name}, Category: {category}, Stock: {stock_quantity}, Price: {price_per_unit}\n")
-#         else:
-#             file.write("No low stock items found.\n")
-#     print(f"Output written to {output_file_path}")
-
         
 def write_to_txt_file(**context):
     output_file_path = "/opt/airflow/dags/low_stock_items.txt"
@@ -94,10 +76,6 @@ with DAG(
         conn_id="INVENTORY",
         sql="SELECT * FROM inventory WHERE stock_quantity < 10;"
     )
-    # write_to_file = PythonOperator(
-    #     task_id="write_to_file",
-    #     python_callable=write_to_txt_file
-    # )
     
     write_to_file = PythonOperator(
     task_id="write_to_file",
