@@ -74,8 +74,10 @@ with DAG(
             VALUES 
                 ('Laptop', 'Electronics', 15, 1000.00),
                 ('Mouse', 'Electronics', 50, 20.00),
+                ('Keyboard', 'Electronics', 5, 70.00),
                 ('Chair', 'Furniture', 8, 45.00),
                 ('Desk', 'Furniture', 5, 150.00);
+                
         """,
     )
 
