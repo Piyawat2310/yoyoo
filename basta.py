@@ -37,7 +37,6 @@ def write_to_txt_file(**context):
                 file.write(f"Item ID: {idx}, Name: {item_name}, Category: {category}, Stock: {stock_quantity}, Price: {price_per_unit}\n")
         else:
             file.write("No low stock items found.\n")
-    
     print(f"Output written to {output_file_path}")
 
 
