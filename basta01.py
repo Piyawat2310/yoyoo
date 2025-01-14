@@ -3,7 +3,7 @@ from airflow import DAG
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.operators.python import PythonOperator
 
-DAG_ID = "basta1"
+DAG_ID = "test01"
 
         
 def write_to_txt_file(**context):
