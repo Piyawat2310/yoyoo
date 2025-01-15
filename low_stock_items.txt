@@ -1,0 +1,4 @@
+Low Stock Items:
+Item ID: 1, Name: Keyboard, Category: Electronics, Stock: 5, Price: 70.0
+Item ID: 2, Name: Chair, Category: Furniture, Stock: 8, Price: 45.0
+Item ID: 3, Name: Desk, Category: Furniture, Stock: 5, Price: 150.0
