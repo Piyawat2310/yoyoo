@@ -7,6 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from pathlib import Path
+import random
+import time
 import logging
 
 # Configure logging
@@ -42,45 +44,55 @@ CREATE TABLE IF NOT EXISTS microsoft_stock_summary (
 """
 
 def scrape_tesla_stock_price(ti):
-    """ดึงราคาหุ้น Tesla จาก Google Search"""
-    url = 'https://www.google.com/search?q=tesla+stock+price+today'
+    """ดึงราคาหุ้น Tesla จาก Yahoo Finance"""
+    url = 'https://finance.yahoo.com/quote/TSLA/'
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": random.choice(USER_AGENTS)
     }
+    session = requests.Session()
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-
-        price_element = soup.select_one('span.IsqQVc.NprOob.wT3VGc')
+        price_element = soup.select_one('span[data-testid="qsp-price"]')
         if not price_element:
             raise ValueError("Tesla stock price element not found on the page")
-
         stock_price = float(price_element.text.replace(',', ''))
         ti.xcom_push(key='tesla_stock_price', value=stock_price)
         logger.info(f"Scraped Tesla stock price: ${stock_price:,.2f}")
+        time.sleep(2)  # หน่วงเวลาเพื่อเลี่ยงการบล็อก
     except Exception as e:
         logger.error(f"Error scraping Tesla stock price: {e}")
         raise
 
 def scrape_microsoft_stock_price(ti):
-    """ดึงราคาหุ้น Microsoft จาก Google Search"""
-    url = 'https://www.google.com/search?q=microsoft+stock+price+today+'
+    """ดึงราคาหุ้น Microsoft จาก Yahoo Finance"""
+    url = 'https://finance.yahoo.com/quote/MSFT/'
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": random.choice(USER_AGENTS)
     }
+    session = requests.Session()
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
-
-        price_element = soup.select_one('span.IsqQVc.NprOob.wT3VGc')
+        price_element = soup.select_one('span[data-testid="qsp-price"]')
         if not price_element:
             raise ValueError("Microsoft stock price element not found on the page")
-
         stock_price = float(price_element.text.replace(',', ''))
         ti.xcom_push(key='microsoft_stock_price', value=stock_price)
         logger.info(f"Scraped Microsoft stock price: ${stock_price:,.2f}")
+        time.sleep(2)  # หน่วงเวลาเพื่อเลี่ยงการบล็อก
     except Exception as e:
         logger.error(f"Error scraping Microsoft stock price: {e}")
         raise
@@ -95,17 +107,13 @@ def transform_and_insert(ti):
             raise ValueError("No stock price found in XCom")
 
         postgres = PostgresHook(postgres_conn_id='Tesla_stock_price')
-
-        # ใช้เวลาในขณะนี้สำหรับการบันทึกลงฐานข้อมูล
         created_at = datetime.now()
 
-        # บันทึกข้อมูลของ Tesla
         postgres.run("""
             INSERT INTO tesla_stock_price (price_usd, created_at)
             VALUES (%s, %s)
         """, parameters=(tesla_stock_price, created_at))
 
-        # บันทึกข้อมูลของ Microsoft
         postgres.run("""
             INSERT INTO microsoft_stock_price (price_usd, created_at)
             VALUES (%s, %s)
@@ -127,28 +135,21 @@ def aggregate_daily_summary():
         """
         df_tesla = postgres.get_pandas_df(query_tesla)
 
-        if df_tesla.empty:
-            logger.warning("No data found for Tesla aggregation.")
-            return
+        if not df_tesla.empty:
+            summary_tesla = df_tesla.groupby('date').agg({
+                'price_usd': ['mean', 'max', 'min']
+            }).reset_index()
+            summary_tesla.columns = ['date', 'average_price', 'max_price', 'min_price']
 
-        # สรุปข้อมูลรายวันสำหรับ Tesla
-        summary_tesla = df_tesla.groupby('date').agg({
-            'price_usd': ['mean', 'max', 'min']
-        }).reset_index()
-        summary_tesla.columns = ['date', 'average_price', 'max_price', 'min_price']
-
-        # บันทึกลงฐานข้อมูล
-        for _, row in summary_tesla.iterrows():
-            postgres.run("""
-                INSERT INTO tesla_stock_summary (date, average_price, max_price, min_price)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (date) DO UPDATE 
-                SET average_price = EXCLUDED.average_price,
-                    max_price = EXCLUDED.max_price,
-                    min_price = EXCLUDED.min_price;
-            """, parameters=(row['date'], row['average_price'], row['max_price'], row['min_price']))
-
-        logger.info("Tesla daily summary aggregation completed and saved.")
+            for _, row in summary_tesla.iterrows():
+                postgres.run("""
+                    INSERT INTO tesla_stock_summary (date, average_price, max_price, min_price)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (date) DO UPDATE 
+                    SET average_price = EXCLUDED.average_price,
+                        max_price = EXCLUDED.max_price,
+                        min_price = EXCLUDED.min_price;
+                """, parameters=(row['date'], row['average_price'], row['max_price'], row['min_price']))
 
         query_microsoft = """
             SELECT price_usd, created_at::date AS date
@@ -156,28 +157,23 @@ def aggregate_daily_summary():
         """
         df_microsoft = postgres.get_pandas_df(query_microsoft)
 
-        if df_microsoft.empty:
-            logger.warning("No data found for Microsoft aggregation.")
-            return
+        if not df_microsoft.empty:
+            summary_microsoft = df_microsoft.groupby('date').agg({
+                'price_usd': ['mean', 'max', 'min']
+            }).reset_index()
+            summary_microsoft.columns = ['date', 'average_price', 'max_price', 'min_price']
 
-        # สรุปข้อมูลรายวันสำหรับ Microsoft
-        summary_microsoft = df_microsoft.groupby('date').agg({
-            'price_usd': ['mean', 'max', 'min']
-        }).reset_index()
-        summary_microsoft.columns = ['date', 'average_price', 'max_price', 'min_price']
+            for _, row in summary_microsoft.iterrows():
+                postgres.run("""
+                    INSERT INTO microsoft_stock_summary (date, average_price, max_price, min_price)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (date) DO UPDATE 
+                    SET average_price = EXCLUDED.average_price,
+                        max_price = EXCLUDED.max_price,
+                        min_price = EXCLUDED.min_price;
+                """, parameters=(row['date'], row['average_price'], row['max_price'], row['min_price']))
 
-        # บันทึกลงฐานข้อมูล
-        for _, row in summary_microsoft.iterrows():
-            postgres.run("""
-                INSERT INTO microsoft_stock_summary (date, average_price, max_price, min_price)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (date) DO UPDATE 
-                SET average_price = EXCLUDED.average_price,
-                    max_price = EXCLUDED.max_price,
-                    min_price = EXCLUDED.min_price;
-            """, parameters=(row['date'], row['average_price'], row['max_price'], row['min_price']))
-
-        logger.info("Microsoft daily summary aggregation completed and saved.")
+        logger.info("Daily summary aggregation completed and saved.")
     except Exception as e:
         logger.error(f"Error in daily aggregation: {e}")
         raise
@@ -186,7 +182,6 @@ def export_data():
     """ส่งออกราคาหุ้น Tesla และ Microsoft เป็นไฟล์ CSV"""
     export_dir = Path('/opt/airflow/dags/stock_reports')
     export_dir.mkdir(exist_ok=True)
-    logger.info(f"Export directory: {export_dir}")
     today = datetime.now().strftime('%Y-%m-%d')
     try:
         postgres = PostgresHook(postgres_conn_id='Tesla_stock_price')
@@ -206,19 +201,13 @@ def export_data():
         """
         df_microsoft = postgres.get_pandas_df(query_microsoft)
 
-        if df_tesla.empty and df_microsoft.empty:
-            logger.warning("No data found for today's Tesla and Microsoft stock prices. Export skipped.")
-            return
-
-        # Export to CSV
-        csv_path_tesla = export_dir / f'tesla_stock_prices_{today}.csv'
-        csv_path_microsoft = export_dir / f'microsoft_stock_prices_{today}.csv'
-
         if not df_tesla.empty:
+            csv_path_tesla = export_dir / f'tesla_stock_prices_{today}.csv'
             df_tesla.to_csv(csv_path_tesla, index=False)
             logger.info(f"Tesla export completed: CSV at {csv_path_tesla}")
 
         if not df_microsoft.empty:
+            csv_path_microsoft = export_dir / f'microsoft_stock_prices_{today}.csv'
             df_microsoft.to_csv(csv_path_microsoft, index=False)
             logger.info(f"Microsoft export completed: CSV at {csv_path_microsoft}")
     except Exception as e:
