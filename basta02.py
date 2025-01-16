@@ -177,6 +177,56 @@ def aggregate_daily_summary():
     except Exception as e:
         logger.error(f"Error in daily aggregation: {e}")
         raise
+    
+def analyze_daily_percentage_change():
+    """
+    วิเคราะห์เปอร์เซ็นต์การเปลี่ยนแปลงของหุ้น Tesla และ Microsoft
+    สำหรับแต่ละวัน และส่งออกข้อมูลเป็นไฟล์ CSV
+    """
+    export_dir = Path('/opt/airflow/dags/stock_reports')
+    export_dir.mkdir(exist_ok=True)
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    try:
+        postgres = PostgresHook(postgres_conn_id='Tesla_stock_price')
+
+        # Query Tesla stock prices
+        query_tesla = """
+            SELECT created_at::date AS date, price_usd
+            FROM tesla_stock_price
+            ORDER BY created_at;
+        """
+        df_tesla = postgres.get_pandas_df(query_tesla)
+
+        if not df_tesla.empty:
+            df_tesla['price_usd'] = df_tesla['price_usd'].astype(float)
+            df_tesla['percentage_change'] = df_tesla['price_usd'].pct_change() * 100
+
+            # Save Tesla data to CSV
+            csv_path_tesla = export_dir / f'tesla_daily_percentage_change_{today}.csv'
+            df_tesla.to_csv(csv_path_tesla, index=False)
+            logger.info(f"Tesla percentage change export completed: CSV at {csv_path_tesla}")
+
+        # Query Microsoft stock prices
+        query_microsoft = """
+            SELECT created_at::date AS date, price_usd
+            FROM microsoft_stock_price
+            ORDER BY created_at;
+        """
+        df_microsoft = postgres.get_pandas_df(query_microsoft)
+
+        if not df_microsoft.empty:
+            df_microsoft['price_usd'] = df_microsoft['price_usd'].astype(float)
+            df_microsoft['percentage_change'] = df_microsoft['price_usd'].pct_change() * 100
+
+            # Save Microsoft data to CSV
+            csv_path_microsoft = export_dir / f'microsoft_daily_percentage_change_{today}.csv'
+            df_microsoft.to_csv(csv_path_microsoft, index=False)
+            logger.info(f"Microsoft percentage change export completed: CSV at {csv_path_microsoft}")
+
+    except Exception as e:
+        logger.error(f"Error in analyzing daily percentage change: {e}")
+        raise
 
 def export_data():
     """ส่งออกราคาหุ้น Tesla และ Microsoft เป็นไฟล์ CSV"""
@@ -257,6 +307,11 @@ aggregate_summary = PythonOperator(
     python_callable=aggregate_daily_summary,
     dag=dag
 )
+analyze_percentage_change = PythonOperator(
+    task_id='analyze_percentage_change',
+    python_callable=analyze_daily_percentage_change,
+    dag=dag
+)
 export_reports = PythonOperator(
     task_id='export_reports',
     python_callable=export_data,
@@ -264,4 +319,4 @@ export_reports = PythonOperator(
 )
 
 # Workflow
-create_table >> [scrape_tesla_stock, scrape_microsoft_stock] >> transform_insert >> aggregate_summary >> export_reports
+create_table >> [scrape_tesla_stock, scrape_microsoft_stock] >> transform_insert >> aggregate_summary >> [export_reports, analyze_percentage_change]
