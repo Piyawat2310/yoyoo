@@ -199,12 +199,22 @@ def analyze_daily_percentage_change():
         df_tesla = postgres.get_pandas_df(query_tesla)
 
         if not df_tesla.empty:
-            df_tesla['price_usd'] = df_tesla['price_usd'].astype(float)
-            df_tesla['percentage_change'] = df_tesla['price_usd'].pct_change() * 100
+            # คำนวณราคาหุ้นเฉลี่ยในแต่ละวัน
+            df_tesla['date'] = pd.to_datetime(df_tesla['date'])
+            df_tesla_avg = df_tesla.groupby('date')['price_usd'].mean().reset_index()
+
+            # คำนวณเปอร์เซ็นต์การเปลี่ยนแปลง
+            df_tesla_avg['percentage_change'] = df_tesla_avg['price_usd'].pct_change() * 100
+
+            # เก็บค่า price_usd ในแต่ละวัน
+            df_tesla_avg['price_usd'] = df_tesla_avg['price_usd'].round(2)
+
+            # เติมค่า percentage_change ที่เป็น NaN สำหรับวันแรก
+            df_tesla_avg['percentage_change'] = df_tesla_avg['percentage_change'].fillna(0)
 
             # Save Tesla data to CSV
             csv_path_tesla = export_dir / f'tesla_daily_percentage_change_{today}.csv'
-            df_tesla.to_csv(csv_path_tesla, index=False)
+            df_tesla_avg.to_csv(csv_path_tesla, index=False)
             logger.info(f"Tesla percentage change export completed: CSV at {csv_path_tesla}")
 
         # Query Microsoft stock prices
@@ -216,17 +226,29 @@ def analyze_daily_percentage_change():
         df_microsoft = postgres.get_pandas_df(query_microsoft)
 
         if not df_microsoft.empty:
-            df_microsoft['price_usd'] = df_microsoft['price_usd'].astype(float)
-            df_microsoft['percentage_change'] = df_microsoft['price_usd'].pct_change() * 100
+            # คำนวณราคาหุ้นเฉลี่ยในแต่ละวัน
+            df_microsoft['date'] = pd.to_datetime(df_microsoft['date'])
+            df_microsoft_avg = df_microsoft.groupby('date')['price_usd'].mean().reset_index()
+
+            # คำนวณเปอร์เซ็นต์การเปลี่ยนแปลง
+            df_microsoft_avg['percentage_change'] = df_microsoft_avg['price_usd'].pct_change() * 100
+
+            # เก็บค่า price_usd ในแต่ละวัน
+            df_microsoft_avg['price_usd'] = df_microsoft_avg['price_usd'].round(2)
+
+            # เติมค่า percentage_change ที่เป็น NaN สำหรับวันแรก
+            df_microsoft_avg['percentage_change'] = df_microsoft_avg['percentage_change'].fillna(0)
 
             # Save Microsoft data to CSV
             csv_path_microsoft = export_dir / f'microsoft_daily_percentage_change_{today}.csv'
-            df_microsoft.to_csv(csv_path_microsoft, index=False)
+            df_microsoft_avg.to_csv(csv_path_microsoft, index=False)
             logger.info(f"Microsoft percentage change export completed: CSV at {csv_path_microsoft}")
 
     except Exception as e:
         logger.error(f"Error in analyzing daily percentage change: {e}")
         raise
+
+
 
 def export_data():
     """ส่งออกราคาหุ้น Tesla และ Microsoft เป็นไฟล์ CSV"""
