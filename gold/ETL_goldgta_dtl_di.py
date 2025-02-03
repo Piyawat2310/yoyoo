@@ -5,6 +5,8 @@ from bs4 import BeautifulSoup
 import requests
 from datetime import datetime, timedelta
 import logging
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -19,12 +21,11 @@ default_args = {
 }
 
 def convert_thai_date(thai_date_str):
-    """ แปลงวันที่จาก '30/01/2568 14:06' เป็น '2025-01-30 14:06:00' """
     try:
         date_part, time_part = thai_date_str.split(' ')
         day, month, buddhist_year = map(int, date_part.split('/'))
         hour, minute = map(int, time_part.split(':'))
-        gregorian_year = buddhist_year - 543  # แปลง พ.ศ. เป็น ค.ศ.
+        gregorian_year = buddhist_year - 543
         return datetime(gregorian_year, month, day, hour, minute).strftime('%Y-%m-%d %H:%M:%S')
     except Exception as e:
         logger.error(f"Error converting date: {thai_date_str}, Error: {str(e)}")
@@ -33,9 +34,35 @@ def convert_thai_date(thai_date_str):
 def fetch_gold_prices(**context):
     try:
         url = "https://www.goldtraders.or.th/UpdatePriceList.aspx"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+
+        # Set up session with retry strategy
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        try:
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=30,
+                verify=False  # Only if necessary
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch from primary URL: {str(e)}")
+            raise
 
         soup = BeautifulSoup(response.content, 'html.parser')
         table = soup.find('table', {'id': 'DetailPlace_MainGridView'})
@@ -43,14 +70,14 @@ def fetch_gold_prices(**context):
         if not table:
             raise ValueError("ไม่พบตารางข้อมูลราคาทอง")
 
-        rows = table.find_all('tr')[1:]  # ข้าม header
+        rows = table.find_all('tr')[1:]
         data = []
         fetch_time = datetime.now()
 
         for row in rows:
             cols = [col.text.strip() for col in row.find_all('td')]
             if len(cols) >= 9:
-                converted_time = convert_thai_date(cols[0])  # แปลงวันที่
+                converted_time = convert_thai_date(cols[0])
                 if not converted_time:
                     continue
                 try:
@@ -101,10 +128,16 @@ def save_to_postgres(**context):
                 for row in data:
                     try:
                         cursor.execute(insert_query, (
-                            row['fetch_time'], row['time'], row['order_no'],
-                            row['buy_price_bar'], row['sell_price_bar'],
-                            row['buy_price_shape'], row['sell_price_shape'],
-                            row['gold_spot'], row['exchange_rate'], row['price_change']
+                            row['fetch_time'],
+                            row['time'],
+                            row['order_no'],
+                            row['buy_price_bar'],
+                            row['sell_price_bar'],
+                            row['buy_price_shape'],
+                            row['sell_price_shape'],
+                            row['gold_spot'],
+                            row['exchange_rate'],
+                            row['price_change']
                         ))
                         conn.commit()
                     except Exception as e:
@@ -122,47 +155,65 @@ def aggregate_gold_prices(**context):
     try:
         pg_hook = PostgresHook(postgres_conn_id='SESAME-DB')
         aggregate_query = """
-            SET datestyle = 'ISO, DMY';
             INSERT INTO dwd_goldgta_dtl_di (
-                fetch_time, time, order_sum, 
-                buy_price_bar_open, buy_price_bar_close, 
-                sell_price_bar_open, sell_price_bar_close, 
-                buy_price_shape_open, buy_price_shape_close, 
-                sell_price_shape_open, sell_price_shape_close, 
-                gold_spot, exchange_rate, price_change_sum
+                fetch_time,
+                time,
+                order_sum,
+                buy_price_bar_open,
+                buy_price_bar_close,
+                sell_price_bar_open,
+                sell_price_bar_close,
+                buy_price_shape_open,
+                buy_price_shape_close,
+                sell_price_shape_open,
+                sell_price_shape_close,
+                gold_spot_open,
+                gold_spot_close,
+                exchange_rate_open,
+                exchange_rate_close,
+                price_change_sum
             )
             WITH daily_data AS (
                 SELECT 
                     time::DATE as date_time,
-                    order_no,
-                    buy_price_bar,
-                    sell_price_bar,
-                    buy_price_shape,
-                    sell_price_shape,
-                    gold_spot,
-                    exchange_rate,
-                    price_change
-                FROM ODS_goldgta_dtl_di
+                    MIN(buy_price_bar) as first_buy_price_bar,
+                    MAX(buy_price_bar) as last_buy_price_bar,
+                    MIN(sell_price_bar) as first_sell_price_bar,
+                    MAX(sell_price_bar) as last_sell_price_bar,
+                    MIN(buy_price_shape) as first_buy_price_shape,
+                    MAX(buy_price_shape) as last_buy_price_shape,
+                    MIN(sell_price_shape) as first_sell_price_shape,
+                    MAX(sell_price_shape) as last_sell_price_shape,
+                    MIN(gold_spot) as first_gold_spot,
+                    MAX(gold_spot) as last_gold_spot,
+                    MIN(exchange_rate) as first_exchange_rate,
+                    MAX(exchange_rate) as last_exchange_rate,
+                    COUNT(*) as order_count,
+                    SUM(price_change) as total_price_change
+                FROM ods_goldgta_dtl_di
                 WHERE time::DATE = CURRENT_DATE
+                GROUP BY time::DATE
             )
             SELECT 
-                CURRENT_TIMESTAMP AS fetch_time,
-                date_time AS time,
-                COUNT(*) AS order_sum,
-                MIN(buy_price_bar) AS buy_price_bar_open,
-                MAX(buy_price_bar) AS buy_price_bar_close,
-                MIN(sell_price_bar) AS sell_price_bar_open,
-                MAX(sell_price_bar) AS sell_price_bar_close,
-                MIN(buy_price_shape) AS buy_price_shape_open,
-                MAX(buy_price_shape) AS buy_price_shape_close,
-                MIN(sell_price_shape) AS sell_price_shape_open,
-                MAX(sell_price_shape) AS sell_price_shape_close,
-                MAX(gold_spot) AS gold_spot,
-                MAX(exchange_rate) AS exchange_rate,
-                SUM(price_change) AS price_change_sum
+                CURRENT_TIMESTAMP as fetch_time,
+                date_time as time,
+                order_count as order_sum,
+                first_buy_price_bar as buy_price_bar_open,
+                last_buy_price_bar as buy_price_bar_close,
+                first_sell_price_bar as sell_price_bar_open,
+                last_sell_price_bar as sell_price_bar_close,
+                first_buy_price_shape as buy_price_shape_open,
+                last_buy_price_shape as buy_price_shape_close,
+                first_sell_price_shape as sell_price_shape_open,
+                last_sell_price_shape as sell_price_shape_close,
+                first_gold_spot as gold_spot_open,
+                last_gold_spot as gold_spot_close,
+                first_exchange_rate as exchange_rate_open,
+                last_exchange_rate as exchange_rate_close,
+                total_price_change as price_change_sum
             FROM daily_data
-            GROUP BY date_time
             ON CONFLICT (time) DO UPDATE SET
+                fetch_time = EXCLUDED.fetch_time,
                 order_sum = EXCLUDED.order_sum,
                 buy_price_bar_open = EXCLUDED.buy_price_bar_open,
                 buy_price_bar_close = EXCLUDED.buy_price_bar_close,
@@ -172,8 +223,10 @@ def aggregate_gold_prices(**context):
                 buy_price_shape_close = EXCLUDED.buy_price_shape_close,
                 sell_price_shape_open = EXCLUDED.sell_price_shape_open,
                 sell_price_shape_close = EXCLUDED.sell_price_shape_close,
-                gold_spot = EXCLUDED.gold_spot,
-                exchange_rate = EXCLUDED.exchange_rate,
+                gold_spot_open = EXCLUDED.gold_spot_open,
+                gold_spot_close = EXCLUDED.gold_spot_close,
+                exchange_rate_open = EXCLUDED.exchange_rate_open,
+                exchange_rate_close = EXCLUDED.exchange_rate_close,
                 price_change_sum = EXCLUDED.price_change_sum;
         """
 
@@ -202,3 +255,6 @@ with DAG(
     aggregate_task = PythonOperator(task_id='aggregate_gold_prices', python_callable=aggregate_gold_prices)
 
     fetch_task >> save_task >> aggregate_task
+    
+    
+    
