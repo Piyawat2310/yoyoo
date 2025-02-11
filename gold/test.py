@@ -12,7 +12,7 @@ default_args = {
     "retries": 1,
 }
 dag = DAG(
-    "transfer_sql_to_postgresql",
+    "ETL_test",
     default_args=default_args,
     description="Migrate data from SQL Server to PostgreSQL",
     schedule_interval=None,
@@ -24,21 +24,8 @@ sqlserver_query = """
 --ProfileDetail
 use BWM_FIT_DB
 
-declare @inMonth varchar(10);
-declare @startDate date;
-declare @endDate date;
---set @inMonth = format(GETDATE(),'yyyy-MM')+'%';
-set @inMonth = '2024-07%'
-set @startDate = REPLACE(REPLACE(@inMonth,'-',''),'%','')+'01';
-set @endDate = DATEADD(s,-1,DATEADD(mm, DATEDIFF(m,0,@startDate)+1,0))
-
---select @enddate
-
 select 
-FORMAT(@endDate,'dd/MM/yyyy','en-us') AS_OF_DATE,
---max(rinv.REQUEST_INVESTOR_ID) as REQUEST_INVESTOR_ID
---, isnull(max(cus.CIF_CODE), '') as cif_code
-isnull(convert(nvarchar(30),cus.customer_id),'') CUSTOMER_ID,
+isnull(convert(nvarchar(30),cus.customer_id),rinv.email) CUSTOMER_ID,
 isnull(convert(nvarchar(1),srl.risk_level),'') KYC_LEVEL,
 case max(rinv.GENDER)
 when 'Female' then 'หญิง'
@@ -107,7 +94,8 @@ then 'อ.คลองหลวง ธัญบุรี หนองเสื�
  WHEN 'APPROVED_DOCUMENT_BYMARKETING' THEN '7 Marketing ตรวจสอบเอกสารแล้ว' 
  WHEN 'REJECTED_BYMARKETING' THEN '8 ยกเลิกโดย Marketing'     
     WHEN 'CANCELLED' THEN '9 ยกเลิกโดย Customer'      
- END) as REQ_STATUS
+ END) as REQ_STATUS,
+ max(ab.AGENT_BRANCH_NAME_THAI) 
 , '1' COUNT_
 from BWM_FIT_DB.dbo.REQUEST_INVESTOR_OPEN_ACCOUNTS rinv
 left join BWM_SA_DB.dbo.SA_CUSTOMER cus on rinv.id_no = cus.regis_card_no
@@ -124,11 +112,11 @@ left join BWM_FIT_DB.dbo.DISTRICTS wdis on wdis.DISTRICT_ID = wsub.DISTRICT_ID
 left join BWM_FIT_DB.dbo.PROVINCES wpro on wpro.PROVINCE_ID = wdis.PROVINCE_ID
 left JOIN BWM_FIT_DB.dbo.REQUEST_UH_OPEN_ACCOUNTS RUH ON RUH.REQUEST_INVESTOR_ID = RINV.REQUEST_INVESTOR_ID
 left join BWM_sa_db.dbo.SA_RISK_LEVEL srl on srl.customer_id = cus.customer_id
-where --RUH.REQUEST_STATUS NOT IN ('CANCELLED') 
-convert(date, rinv.CREATE_DATETIME) <= @endDate
---and cus.customer_id in (1304,1647,2048,2188,2355,2870,3263,3702,4118,4280,4292,4334,4575,7131,7241,7310,7311,7312,7505,7848,7925,8180,8334,8912,9444,9475,9538)
+left join BWM_FIT_DB.dbo.UNITHOLDERS uh on uh.REQUEST_UNITHOLDER_ID = rinv.REQUEST_INVESTOR_ID
+left join BWM_FIT_DB.dbo.MARKETINGS mkt on uh.MARKETING_ID = mkt.MARKETING_ID
+left join BWM_FIT_DB.dbo.AGENT_BRANCHES ab on mkt.AGENT_BRANCH_ID = ab.AGENT_BRANCH_ID
 group by rinv.email, cus.customer_id, srl.risk_level
-	order by create_date
+order by create_date
 """
 
 # Function: Fetch data from MSSQL
@@ -140,67 +128,23 @@ def fetch_sqlserver_data():
     rows = cursor.fetchall()
     return rows
 
-# Function: Create PostgreSQL Table
-def create_postgres_table():
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS profile_detail (
-        as_of_date TEXT,
-        customer_id TEXT,
-        kyc_level TEXT,
-        sex TEXT,
-        marital_status TEXT,
-        age INT,
-        range_age TEXT,
-        education TEXT,
-        monthly_income INT,
-        range_monthly_income TEXT,
-        occupation_name TEXT,
-        business_type TEXT,
-        home_address TEXT,
-        home_district TEXT,
-        work_address TEXT,
-        work_district TEXT,
-        work_district_group TEXT,
-        create_date DATE,
-        req_status TEXT,
-        count_ INT
-    );
-    """
-    postgres_hook.run(create_table_query)
-
 # Function: Insert Data into PostgreSQL
 def insert_into_postgres(rows):
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
+    postgres_hook = PostgresHook(postgres_conn_id="SESAME-DB")
     insert_query = """
-    INSERT INTO profile_detail (
-        as_of_date, customer_id, kyc_level, sex, marital_status, age, range_age,
-        education, monthly_income, range_monthly_income, occupation_name,
-        business_type, home_address, home_district, work_address, work_district,
-        work_district_group, create_date, req_status, count_
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+    INSERT INTO ods_profile_detail (
+        CUSTOMER_ID, KYC_LEVEL, SEX, MARITAL_STATUS, AGE, RANGE_AGE, EDUCATION, 
+        MONTHLY_INCOME, RANGE_MONTHLY_INCOME, OCCUPATION_NAME, BUSINESS_TYPE, 
+        HOME_ADDRESS, HOME_DISTRICT, WORK_ADDRESS, WORK_DISTRICT, WORK_DISTRICT_GROUP,
+        CREATE_DATE, REQ_STATUS, AGENT_BRANCH_NAME_THAI, COUNT_, inc_day
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,%s, %s, %s, %s, %s, %s, %s, %s,%s, %s, %s, %s, %s);
     """
-    postgres_hook.insert_rows(table="profile_detail", rows=rows)
-
-# Function: Validate Data in PostgreSQL
-def validate_postgres_data():
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
-    select_query = "SELECT * FROM profile_detail LIMIT 10;"
-    records = postgres_hook.get_records(select_query)
-    print("Sample Records:")
-    for record in records:
-        print(record)
+    postgres_hook.insert_rows(table="ods_profile_detail", rows=rows)
 
 # Define Tasks
 fetch_data_task = PythonOperator(
     task_id="fetch_sqlserver_data",
     python_callable=fetch_sqlserver_data,
-    dag=dag,
-)
-
-create_table_task = PythonOperator(
-    task_id="create_postgres_table",
-    python_callable=create_postgres_table,
     dag=dag,
 )
 
@@ -211,28 +155,5 @@ insert_data_task = PythonOperator(
     dag=dag,
 )
 
-validate_data_task = PythonOperator(
-    task_id="validate_postgres_data",
-    python_callable=validate_postgres_data,
-    dag=dag,
-)
-
 # Define Task Dependencies
-fetch_data_task >> create_table_task >> insert_data_task >> validate_data_task
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+fetch_data_task >> insert_data_task

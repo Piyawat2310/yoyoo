@@ -3,42 +3,32 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from datetime import datetime
+import pandas as pd
 
-# กำหนดค่าเริ่มต้นของ DAG
+# กำหนดค่าเริ่มต้นสำหรับ DAG
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
     "start_date": datetime(2025, 1, 1),
     "retries": 1,
 }
+
+# สร้าง DAG
 dag = DAG(
-    "transfer_sql_to_postgresql",
+    "ETL_profile_detail_DTL_DI",
     default_args=default_args,
-    description="Migrate data from SQL Server to PostgreSQL",
-    schedule_interval=None,
+    description="ย้ายข้อมูลจาก SQL Server ไปยัง PostgreSQL พร้อมจัดการข้อมูลใน ODS และ DWD",
+    schedule_interval='0 12 * * *',
     catchup=False,
 )
 
-# SQL Server Query
+# SQL Query จาก SQL Server (ใช้ query เดิมของคุณ)
 sqlserver_query = """
 --ProfileDetail
 use BWM_FIT_DB
 
-declare @inMonth varchar(10);
-declare @startDate date;
-declare @endDate date;
---set @inMonth = format(GETDATE(),'yyyy-MM')+'%';
-set @inMonth = '2024-07%'
-set @startDate = REPLACE(REPLACE(@inMonth,'-',''),'%','')+'01';
-set @endDate = DATEADD(s,-1,DATEADD(mm, DATEDIFF(m,0,@startDate)+1,0))
-
---select @enddate
-
 select 
-FORMAT(@endDate,'dd/MM/yyyy','en-us') AS_OF_DATE,
---max(rinv.REQUEST_INVESTOR_ID) as REQUEST_INVESTOR_ID
---, isnull(max(cus.CIF_CODE), '') as cif_code
-isnull(convert(nvarchar(30),cus.customer_id),'') CUSTOMER_ID,
+isnull(convert(nvarchar(30),cus.customer_id),rinv.email) CUSTOMER_ID,
 isnull(convert(nvarchar(1),srl.risk_level),'') KYC_LEVEL,
 case max(rinv.GENDER)
 when 'Female' then 'หญิง'
@@ -107,7 +97,8 @@ then 'อ.คลองหลวง ธัญบุรี หนองเสื�
  WHEN 'APPROVED_DOCUMENT_BYMARKETING' THEN '7 Marketing ตรวจสอบเอกสารแล้ว' 
  WHEN 'REJECTED_BYMARKETING' THEN '8 ยกเลิกโดย Marketing'     
     WHEN 'CANCELLED' THEN '9 ยกเลิกโดย Customer'      
- END) as REQ_STATUS
+ END) as REQ_STATUS,
+ max(ab.AGENT_BRANCH_NAME_THAI) 
 , '1' COUNT_
 from BWM_FIT_DB.dbo.REQUEST_INVESTOR_OPEN_ACCOUNTS rinv
 left join BWM_SA_DB.dbo.SA_CUSTOMER cus on rinv.id_no = cus.regis_card_no
@@ -124,15 +115,20 @@ left join BWM_FIT_DB.dbo.DISTRICTS wdis on wdis.DISTRICT_ID = wsub.DISTRICT_ID
 left join BWM_FIT_DB.dbo.PROVINCES wpro on wpro.PROVINCE_ID = wdis.PROVINCE_ID
 left JOIN BWM_FIT_DB.dbo.REQUEST_UH_OPEN_ACCOUNTS RUH ON RUH.REQUEST_INVESTOR_ID = RINV.REQUEST_INVESTOR_ID
 left join BWM_sa_db.dbo.SA_RISK_LEVEL srl on srl.customer_id = cus.customer_id
-where --RUH.REQUEST_STATUS NOT IN ('CANCELLED') 
-convert(date, rinv.CREATE_DATETIME) <= @endDate
---and cus.customer_id in (1304,1647,2048,2188,2355,2870,3263,3702,4118,4280,4292,4334,4575,7131,7241,7310,7311,7312,7505,7848,7925,8180,8334,8912,9444,9475,9538)
+left join BWM_FIT_DB.dbo.UNITHOLDERS uh on uh.REQUEST_UNITHOLDER_ID = rinv.REQUEST_INVESTOR_ID
+left join BWM_FIT_DB.dbo.MARKETINGS mkt on uh.MARKETING_ID = mkt.MARKETING_ID
+left join BWM_FIT_DB.dbo.AGENT_BRANCHES ab on mkt.AGENT_BRANCH_ID = ab.AGENT_BRANCH_ID
+WHERE rinv.CREATE_DATETIME >= DATEADD(day, -180, GETDATE())
 group by rinv.email, cus.customer_id, srl.risk_level
-	order by create_date
+order by create_date
 """
 
-# Function: Fetch data from MSSQL
+# ฟังก์ชันสำหรับดึงข้อมูลจาก SQL Server
 def fetch_sqlserver_data():
+    """
+    ดึงข้อมูลจาก SQL Server โดยใช้ query ที่กำหนด
+    returns: ข้อมูลที่ดึงมาจาก SQL Server
+    """
     sqlserver_hook = MsSqlHook(mssql_conn_id="company_connection")
     conn = sqlserver_hook.get_conn()
     cursor = conn.cursor()
@@ -140,99 +136,133 @@ def fetch_sqlserver_data():
     rows = cursor.fetchall()
     return rows
 
-# Function: Create PostgreSQL Table
-def create_postgres_table():
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS profile_detail (
-        as_of_date TEXT,
-        customer_id TEXT,
-        kyc_level TEXT,
-        sex TEXT,
-        marital_status TEXT,
-        age INT,
-        range_age TEXT,
-        education TEXT,
-        monthly_income INT,
-        range_monthly_income TEXT,
-        occupation_name TEXT,
-        business_type TEXT,
-        home_address TEXT,
-        home_district TEXT,
-        work_address TEXT,
-        work_district TEXT,
-        work_district_group TEXT,
-        create_date DATE,
-        req_status TEXT,
-        count_ INT
-    );
+# ฟังก์ชันสำหรับประมวลผลและบันทึกข้อมูล
+def process_and_insert_data(rows):
     """
-    postgres_hook.run(create_table_query)
-
-# Function: Insert Data into PostgreSQL
-def insert_into_postgres(rows):
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
-    insert_query = """
-    INSERT INTO profile_detail (
-        as_of_date, customer_id, kyc_level, sex, marital_status, age, range_age,
-        education, monthly_income, range_monthly_income, occupation_name,
-        business_type, home_address, home_district, work_address, work_district,
-        work_district_group, create_date, req_status, count_
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+    ประมวลผลและบันทึกข้อมูลลงในตาราง ODS และ DWD
     """
-    postgres_hook.insert_rows(table="profile_detail", rows=rows)
+    postgres_hook = PostgresHook(postgres_conn_id="SESAME-DB")
+    conn = postgres_hook.get_conn()
+    cur = conn.cursor()
+    current_date = datetime.now().date()
+    
+    # แปลงข้อมูลสำหรับ ODS
+    processed_rows = []
+    for row in rows:
+        row_list = list(row)
+        row_list.append(current_date)  # เพิ่ม inc_day
+        processed_rows.append(tuple(row_list))
+    
+    try:
+        # บันทึกข้อมูลลงในตาราง ODS
+        ods_insert_query = """
+        INSERT INTO ods_profile_detail (
+            CUSTOMER_ID, KYC_LEVEL, SEX, MARITAL_STATUS, AGE, RANGE_AGE, EDUCATION, 
+            MONTHLY_INCOME, RANGE_MONTHLY_INCOME, OCCUPATION_NAME, BUSINESS_TYPE, 
+            HOME_ADDRESS, HOME_DISTRICT, WORK_ADDRESS, WORK_DISTRICT, WORK_DISTRICT_GROUP,
+            CREATE_DATE, REQ_STATUS, AGENT_BRANCH_NAME_THAI, COUNT_, inc_day
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        cur.executemany(ods_insert_query, processed_rows)
+        
+        # ดึงข้อมูล create_date ที่มีอยู่ในตาราง DWD
+        cur.execute("SELECT create_date, customer_id FROM dwd_profile_detail")
+        existing_records = {(str(row[0]), row[1]) for row in cur.fetchall()}
+        
+        # แยกข้อมูลสำหรับ insert และ update
+        rows_to_insert = []
+        rows_to_update = []
+        
+        for row in processed_rows:
+            key = (str(row[16]), row[0])  # create_date และ customer_id
+            if key in existing_records:
+                rows_to_update.append(row)
+            else:
+                rows_to_insert.append(row)
+        
+        # Insert ข้อมูลใหม่
+        if rows_to_insert:
+            dwd_insert_query = """
+            INSERT INTO dwd_profile_detail (
+                CUSTOMER_ID, KYC_LEVEL, SEX, MARITAL_STATUS, AGE, RANGE_AGE, EDUCATION, 
+                MONTHLY_INCOME, RANGE_MONTHLY_INCOME, OCCUPATION_NAME, BUSINESS_TYPE, 
+                HOME_ADDRESS, HOME_DISTRICT, WORK_ADDRESS, WORK_DISTRICT, WORK_DISTRICT_GROUP,
+                CREATE_DATE, REQ_STATUS, AGENT_BRANCH_NAME_THAI, COUNT_, inc_day
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            insert_data = [row[:-1] + (row[16],) for row in rows_to_insert]  # Set inc_day = create_date
+            cur.executemany(dwd_insert_query, insert_data)
 
-# Function: Validate Data in PostgreSQL
-def validate_postgres_data():
-    postgres_hook = PostgresHook(postgres_conn_id="INVENTORY")
-    select_query = "SELECT * FROM profile_detail LIMIT 10;"
-    records = postgres_hook.get_records(select_query)
-    print("Sample Records:")
-    for record in records:
-        print(record)
+        # Update ข้อมูลที่มีอยู่
+        if rows_to_update:
+            dwd_update_query = """
+            UPDATE dwd_profile_detail
+            SET 
+                KYC_LEVEL = %s, SEX = %s, MARITAL_STATUS = %s, AGE = %s, 
+                RANGE_AGE = %s, EDUCATION = %s, MONTHLY_INCOME = %s, 
+                RANGE_MONTHLY_INCOME = %s, OCCUPATION_NAME = %s, BUSINESS_TYPE = %s,
+                HOME_ADDRESS = %s, HOME_DISTRICT = %s, WORK_ADDRESS = %s, 
+                WORK_DISTRICT = %s, WORK_DISTRICT_GROUP = %s, REQ_STATUS = %s,
+                AGENT_BRANCH_NAME_THAI = %s, COUNT_ = %s, inc_day = %s
+            WHERE CUSTOMER_ID = %s AND CREATE_DATE = %s
+            """
+            
+            formatted_rows = []
+            for row in rows_to_update:
+                # จัดเตรียมข้อมูลสำหรับ SET clause
+                update_data = [
+                    row[1],   # KYC_LEVEL
+                    row[2],   # SEX
+                    row[3],   # MARITAL_STATUS
+                    row[4],   # AGE
+                    row[5],   # RANGE_AGE
+                    row[6],   # EDUCATION
+                    row[7],   # MONTHLY_INCOME
+                    row[8],   # RANGE_MONTHLY_INCOME
+                    row[9],   # OCCUPATION_NAME
+                    row[10],  # BUSINESS_TYPE
+                    row[11],  # HOME_ADDRESS
+                    row[12],  # HOME_DISTRICT
+                    row[13],  # WORK_ADDRESS
+                    row[14],  # WORK_DISTRICT
+                    row[15],  # WORK_DISTRICT_GROUP
+                    row[17],  # REQ_STATUS
+                    row[18],  # AGENT_BRANCH_NAME_THAI
+                    row[19],  # COUNT_
+                    row[16],  # inc_day (CREATE_DATE)
+                    row[0],   # CUSTOMER_ID (WHERE)
+                    row[16]   # CREATE_DATE (WHERE)
+                ]
+                formatted_rows.append(tuple(update_data))
+            
+            cur.executemany(dwd_update_query, formatted_rows)
+            
+        # Commit การเปลี่ยนแปลงทั้งหมด
+        conn.commit()
+    
+    except Exception as e:
+        conn.rollback()
+        raise e
+    
+    finally:
+        cur.close()
+        conn.close()
 
-# Define Tasks
+# กำหนด Tasks
 fetch_data_task = PythonOperator(
     task_id="fetch_sqlserver_data",
     python_callable=fetch_sqlserver_data,
     dag=dag,
 )
 
-create_table_task = PythonOperator(
-    task_id="create_postgres_table",
-    python_callable=create_postgres_table,
+process_insert_task = PythonOperator(
+    task_id="process_and_insert_data",
+    python_callable=process_and_insert_data,
+    op_args=[fetch_data_task.output],
     dag=dag,
 )
 
-insert_data_task = PythonOperator(
-    task_id="insert_into_postgres",
-    python_callable=insert_into_postgres,
-    op_args=[fetch_data_task.output],  # ส่ง output จาก fetch_data_task
-    dag=dag,
-)
-
-validate_data_task = PythonOperator(
-    task_id="validate_postgres_data",
-    python_callable=validate_postgres_data,
-    dag=dag,
-)
-
-# Define Task Dependencies
-fetch_data_task >> create_table_task >> insert_data_task >> validate_data_task
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# กำหนดลำดับการทำงานของ Tasks
+fetch_data_task >> process_insert_task
 
 
