@@ -217,7 +217,7 @@ dag = DAG(
     'etl_goldapi_dtl_di',
     default_args=default_args,
     description='DAG สำหรับดึงข้อมูลราคาทองคำย้อนหลัง 7 วัน',
-    schedule_interval='0 11 * * *',
+    schedule_interval='0 18 * * *',
     catchup=False
 )
 

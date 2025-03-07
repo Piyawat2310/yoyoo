@@ -341,7 +341,7 @@ with DAG(
     'ETL_goldgta_dtl_di',
     default_args=default_args,
     description='Scrape gold prices and save to PostgreSQL with enhanced error handling',
-    schedule_interval='0 11 * * *',  # รันทุกวันเวลา 18:00 น.
+    schedule_interval='0 18 * * *',  # รันทุกวันเวลา 18:00 น.
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1

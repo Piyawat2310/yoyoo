@@ -18,7 +18,7 @@ dag = DAG(
     "ETL_profile_detail_DTL_DI",
     default_args=default_args,
     description="ย้ายข้อมูลจาก SQL Server ไปยัง PostgreSQL พร้อมจัดการข้อมูลใน ODS และ DWD",
-    schedule_interval='0 12 * * *',
+    schedule_interval='0 18 * * *',
     catchup=False,
 )
 

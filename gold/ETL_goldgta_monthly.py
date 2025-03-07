@@ -340,7 +340,7 @@ with DAG(
     'ETL_goldgta_monthly',
     default_args=default_args,
     description='Scrape gold prices for date range and save to PostgreSQL',
-    schedule_interval='0 11 * * *',
+    schedule_interval='0 18 * * *',
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1
