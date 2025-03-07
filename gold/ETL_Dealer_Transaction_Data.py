@@ -268,7 +268,7 @@ with DAG(
     'ETL_Dealer_Transaction_Data',
     default_args=default_args,
     description='Transfer Dealer Transaction Data from MSSQL to PostgreSQL ODS and DWD',
-    schedule_interval='@daily',
+    schedule_interval='0 12 * * *',  
     catchup=False
 ) as dag:
     
