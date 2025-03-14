@@ -15,7 +15,8 @@ def extract_data_from_mssql(**context):
     
     # คิวรีดึงข้อมูล (ใช้คิวรีเดิมที่คุณให้มา)
     query = """
-    USE BWM_SA_DB;
+    
+USE BWM_SA_DB;
 
 SELECT FORMAT(GETDATE(), 'dd/MM/yyyy') AS AS_OF_DATE
     , SA_USER.MARKETING_CODE
@@ -89,12 +90,7 @@ FROM SA_USER
 WHERE SA_AGENT_BRANCH.AGENT_BRANCH_ID <> 1 
     AND SA_USER.ENABLE = 'Y'
     AND (
-        (SA_ORDER.ORDER_DATE BETWEEN DATEADD(DAY, -15, GETDATE()) AND GETDATE()) 
-        OR SA_ORDER.ORDER_DATE IS NULL
-    )
-    AND SA_FUND.FUND_CODE IS NOT NULL  
-    AND SA_ORDER.ORDER_DATE IS NOT NULL  
-    AND SA_ORDER_DETAIL.AT_ALLOT_DATE IS NOT NULL  
+        (SA_ORDER.ORDER_DATE BETWEEN DATEADD(DAY, -30, GETDATE()) AND GETDATE())) 
 
 ORDER BY SA_AGENT_BRANCH.BRANCH_NAME_TH, SA_USER.MARKETING_CODE, CUSTOMER_ID, SA_FUNDHOUSE.FUNDHOUSE_CODE, SA_FUND.FUND_CODE, SA_ORDER.ORDER_DATE;
 
@@ -160,8 +156,6 @@ def load_data_to_ods(**context):
     with postgres_hook.get_conn() as conn:
         with conn.cursor() as cur:
             try:
-                # ไม่ต้องลบข้อมูลเก่าเพื่อให้ข้อมูลสะสม
-                
                 # ใช้ executemany กับ processed_row
                 cur.executemany(sql, [[row.get(col, None) for col in columns] for row in data])
                 conn.commit()
