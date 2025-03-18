@@ -113,6 +113,10 @@ def preprocess_data(df):
     df['ORDER_DATE'] = pd.to_datetime(df['ORDER_DATE'], format='%d/%m/%Y', errors='coerce')
     df['ALLOT_DATE'] = pd.to_datetime(df['ALLOT_DATE'], format='%d/%m/%Y', errors='coerce')
     
+    # แปลงเป็น string ในรูปแบบที่ PostgreSQL รองรับ (YYYY-MM-DD)
+    df['ORDER_DATE'] = df['ORDER_DATE'].dt.strftime('%Y-%m-%d')
+    df['ALLOT_DATE'] = df['ALLOT_DATE'].dt.strftime('%Y-%m-%d')
+    
     # แทนที่ค่าว่างและค่าที่เป็น NaN ด้วย None
     df = df.where(pd.notnull(df), None)
     
@@ -133,6 +137,7 @@ def preprocess_data(df):
     
     return data, list(df.columns)
 
+
 def load_data_to_ods(**context):
     """
     Load data from Microsoft SQL Server to ODS table in PostgreSQL
@@ -147,7 +152,7 @@ def load_data_to_ods(**context):
     postgres_hook = PostgresHook(postgres_conn_id='SESAME-DB')
     
     # ชื่อตารางที่จะโหลดข้อมูล
-    table_name = 'ods_Dealer_Transaction_Data'
+    table_name = 'ods_Dealer_Transaction_Data_dtl_di'
     
     # สร้าง SQL เพื่อ insert 
     sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(['%s']*len(columns))})"
@@ -155,6 +160,7 @@ def load_data_to_ods(**context):
     # เปิดการเชื่อมต่อและ insert
     with postgres_hook.get_conn() as conn:
         with conn.cursor() as cur:
+            cur.execute("SET datestyle = 'ISO, DMY';")
             try:
                 # ใช้ executemany กับ processed_row
                 cur.executemany(sql, [[row.get(col, None) for col in columns] for row in data])
@@ -178,8 +184,8 @@ def upsert_data_to_dwd(**context):
     postgres_hook = PostgresHook(postgres_conn_id='SESAME-DB')
     
     # ชื่อตาราง
-    ods_table = 'ods_Dealer_Transaction_Data'
-    dwd_table = 'dwd_Dealer_Transaction_Data'
+    ods_table = 'ods_Dealer_Transaction_Data_dtl_di'
+    dwd_table = 'dwd_Dealer_Transaction_Data_dtl_di'
     
     # กำหนด key columns
     key_columns = ['MARKETING_CODE', 'CUSTOMER_ID','UNITHOLDER_NO','FUND_CODE', 'ORDER_DATE', 'ORDER_TYPE']
@@ -259,7 +265,7 @@ default_args = {
 }
 
 with DAG(
-    'ETL_Dealer_Transaction_Data',
+    'ETL_Dealer_Transaction_Data_dtl_di',
     default_args=default_args,
     description='Transfer Dealer Transaction Data from MSSQL to PostgreSQL ODS and DWD',
     schedule_interval='0 12 * * *',  

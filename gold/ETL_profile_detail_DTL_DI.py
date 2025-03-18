@@ -17,7 +17,7 @@ default_args = {
 dag = DAG(
     "ETL_profile_detail_DTL_DI",
     default_args=default_args,
-    description="ย้ายข้อมูลจาก SQL Server ไปยัง PostgreSQL พร้อมจัดการข้อมูลใน ODS และ DWD",
+    description="ย้ายข้อมูลจาก SQL Server ไปยัง PostgreSQL พร้อมจัดการข้อมูลใน ODS, DWD และ dim_province_iso",
     schedule_interval='0 18 * * *',
     catchup=False,
 )
@@ -248,6 +248,173 @@ def process_and_insert_data(rows):
         cur.close()
         conn.close()
 
+# ฟังก์ชันสำหรับจัดการข้อมูล dim_province_iso โดยดึงข้อมูลจังหวัดจาก DWD
+def manage_dim_iso():
+    """
+    จัดการข้อมูลในตาราง dim_province_iso โดยใช้เฉพาะจังหวัดที่มีอยู่ในข้อมูล DWD
+    """
+    # ข้อมูลรหัสจังหวัดตามมาตรฐาน ISO_3166-2:TH และชื่อจังหวัดภาษาไทย
+    all_provinces = {
+        "กรุงเทพมหานคร": "TH-10",
+        "สมุทรปราการ": "TH-11",
+        "นนทบุรี": "TH-12",
+        "ปทุมธานี": "TH-13",
+        "พระนครศรีอยุธยา": "TH-14",
+        "อ่างทอง": "TH-15",
+        "ลพบุรี": "TH-16",
+        "สิงห์บุรี": "TH-17",
+        "ชัยนาท": "TH-18",
+        "สระบุรี": "TH-19",
+        "ชลบุรี": "TH-20",
+        "ระยอง": "TH-21",
+        "จันทบุรี": "TH-22",
+        "ตราด": "TH-23",
+        "ฉะเชิงเทรา": "TH-24",
+        "ปราจีนบุรี": "TH-25",
+        "นครนายก": "TH-26",
+        "สระแก้ว": "TH-27",
+        "นครราชสีมา": "TH-30",
+        "บุรีรัมย์": "TH-31",
+        "สุรินทร์": "TH-32",
+        "ศรีสะเกษ": "TH-33",
+        "อุบลราชธานี": "TH-34",
+        "ยโสธร": "TH-35",
+        "ชัยภูมิ": "TH-36",
+        "อำนาจเจริญ": "TH-37",
+        "บึงกาฬ": "TH-38",
+        "หนองบัวลำภู": "TH-39",
+        "ขอนแก่น": "TH-40",
+        "อุดรธานี": "TH-41",
+        "เลย": "TH-42",
+        "หนองคาย": "TH-43",
+        "มหาสารคาม": "TH-44",
+        "ร้อยเอ็ด": "TH-45",
+        "กาฬสินธุ์": "TH-46",
+        "สกลนคร": "TH-47",
+        "นครพนม": "TH-48",
+        "มุกดาหาร": "TH-49",
+        "เชียงใหม่": "TH-50",
+        "ลำพูน": "TH-51",
+        "ลำปาง": "TH-52",
+        "อุตรดิตถ์": "TH-53",
+        "แพร่": "TH-54",
+        "น่าน": "TH-55",
+        "พะเยา": "TH-56",
+        "เชียงราย": "TH-57",
+        "แม่ฮ่องสอน": "TH-58",
+        "นครสวรรค์": "TH-60",
+        "อุทัยธานี": "TH-61",
+        "กำแพงเพชร": "TH-62",
+        "ตาก": "TH-63",
+        "สุโขทัย": "TH-64",
+        "พิษณุโลก": "TH-65",
+        "พิจิตร": "TH-66",
+        "เพชรบูรณ์": "TH-67",
+        "ราชบุรี": "TH-70",
+        "กาญจนบุรี": "TH-71",
+        "สุพรรณบุรี": "TH-72",
+        "นครปฐม": "TH-73",
+        "สมุทรสาคร": "TH-74",
+        "สมุทรสงคราม": "TH-75",
+        "เพชรบุรี": "TH-76",
+        "ประจวบคีรีขันธ์": "TH-77",
+        "นครศรีธรรมราช": "TH-80",
+        "กระบี่": "TH-81",
+        "พังงา": "TH-82",
+        "ภูเก็ต": "TH-83",
+        "สุราษฎร์ธานี": "TH-84",
+        "ระนอง": "TH-85",
+        "ชุมพร": "TH-86",
+        "สงขลา": "TH-90",
+        "สตูล": "TH-91",
+        "ตรัง": "TH-92",
+        "พัทลุง": "TH-93",
+        "ปัตตานี": "TH-94",
+        "ยะลา": "TH-95",
+        "นราธิวาส": "TH-96"
+    }
+    
+    postgres_hook = PostgresHook(postgres_conn_id="SESAME-DB")
+    conn = postgres_hook.get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # สร้างตาราง dim_province_iso ถ้ายังไม่มี
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS dim_province_iso (
+            province_code VARCHAR(10) PRIMARY KEY,
+            province_name_th VARCHAR(100) NOT NULL
+        );
+        """)
+        
+        # ดึงข้อมูลจังหวัดที่มีอยู่ในตาราง dwd_profile_detail
+        # เปลี่ยนจาก HOME_DISTRICT และ WORK_DISTRICT เป็น HOME_ADDRESS และ WORK_ADDRESS
+        cur.execute("""
+        SELECT DISTINCT HOME_ADDRESS FROM dwd_profile_detail
+        WHERE HOME_ADDRESS IS NOT NULL AND HOME_ADDRESS <> ''
+        UNION
+        SELECT DISTINCT WORK_ADDRESS FROM dwd_profile_detail
+        WHERE WORK_ADDRESS IS NOT NULL AND WORK_ADDRESS <> ''
+        """)
+        
+        dwd_addresses_raw = cur.fetchall()
+        print(f"พบที่อยู่ทั้งหมด {len(dwd_addresses_raw)} รายการในข้อมูล DWD")
+        
+        # ดึงรายชื่อจังหวัดจากที่อยู่
+        dwd_provinces = set()
+        for row in dwd_addresses_raw:
+            if row[0]:  # ตรวจสอบว่าไม่ใช่ค่า None
+                address = row[0].strip()
+                if address:  # ตรวจสอบว่าไม่ใช่สตริงว่าง
+                    # ค้นหาชื่อจังหวัดในที่อยู่
+                    for province_name in all_provinces:
+                        if province_name in address:
+                            dwd_provinces.add(province_name)
+                            print(f"พบจังหวัด: '{province_name}' ในที่อยู่: '{address[:50]}...'")
+                            break
+        
+        print(f"สกัดจังหวัดได้ {len(dwd_provinces)} จังหวัด")
+        
+        # ลบข้อมูลเดิมในตาราง dim_province_iso เพื่อทำการอัพเดทใหม่
+        cur.execute("DELETE FROM dim_province_iso")  # ใช้ DELETE แทน TRUNCATE เพื่อความปลอดภัย
+        conn.commit()  # Commit หลังจากลบข้อมูลเพื่อป้องกันปัญหา transaction
+        
+        # เตรียมข้อมูลจังหวัดที่พบในข้อมูล DWD
+        provinces_to_insert = []
+        
+        # จับคู่จังหวัดที่พบกับรหัส
+        for province_name in dwd_provinces:
+            if province_name in all_provinces:
+                province_code = all_provinces[province_name]
+                provinces_to_insert.append((province_code, province_name))
+                print(f"จับคู่จังหวัด: '{province_name}' กับรหัส '{province_code}'")
+        
+        print(f"กำลังเพิ่ม {len(provinces_to_insert)} จังหวัดลงในตาราง dim_province_iso")
+        
+        # เพิ่มข้อมูลใหม่แบบทีละรายการเพื่อหลีกเลี่ยงปัญหา
+        if provinces_to_insert:
+            for province_code, province_name in provinces_to_insert:
+                try:
+                    insert_query = """
+                    INSERT INTO dim_province_iso (province_code, province_name_th)
+                    VALUES (%s, %s)
+                    """
+                    cur.execute(insert_query, (province_code, province_name))
+                    conn.commit()  # Commit ทีละรายการ
+                    print(f"เพิ่มจังหวัด '{province_name}' (รหัส '{province_code}') สำเร็จ")
+                except Exception as e:
+                    conn.rollback()
+                    print(f"ไม่สามารถเพิ่มจังหวัด '{province_name}' (รหัส '{province_code}'): {e}")
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"เกิดข้อผิดพลาด: {e}")
+        raise e
+    
+    finally:
+        cur.close()
+        conn.close()
+
 # กำหนด Tasks
 fetch_data_task = PythonOperator(
     task_id="fetch_sqlserver_data",
@@ -262,7 +429,11 @@ process_insert_task = PythonOperator(
     dag=dag,
 )
 
+manage_dim_iso_task = PythonOperator(
+    task_id="manage_dim_iso",
+    python_callable=manage_dim_iso,
+    dag=dag,
+)
+
 # กำหนดลำดับการทำงานของ Tasks
-fetch_data_task >> process_insert_task
-
-
+fetch_data_task >> process_insert_task >> manage_dim_iso_task

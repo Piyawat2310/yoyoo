@@ -100,7 +100,7 @@ def load_data_to_ods_joindate(**context):
     postgres_hook = PostgresHook(postgres_conn_id='SESAME-DB')
     
     # ชื่อตารางที่จะโหลดข้อมูล
-    table_name = 'ods_New_member_Stats'
+    table_name = 'ods_New_member_Stats_dtl_di'
     
     # สร้าง SQL เพื่อ insert 
     sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(['%s']*len(columns))})"
@@ -134,7 +134,7 @@ def load_data_to_ods_logindate(**context):
     postgres_hook = PostgresHook(postgres_conn_id='SESAME-DB')
     
     # ชื่อตารางที่จะโหลดข้อมูล
-    table_name = 'ods_New_member_Stats'
+    table_name = 'ods_New_member_Stats_dtl_di'
     
     # สร้าง SQL เพื่อ insert 
     sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(['%s']*len(columns))})"
@@ -167,8 +167,8 @@ def upsert_data_to_dwd(**context):
     postgres_hook = PostgresHook(postgres_conn_id='SESAME-DB')
     
     # ชื่อตาราง
-    ods_table = 'ods_New_member_Stats'
-    dwd_table = 'dwd_New_member_Stats'
+    ods_table = 'ods_New_member_Stats_dtl_di'
+    dwd_table = 'dwd_New_member_Stats_dtl_di'
     
     # กำหนด key columns
     key_columns = ['MEMBERID']
@@ -296,7 +296,7 @@ default_args = {
 }
 
 with DAG(
-    'ETL_New_member_Stats',
+    'ETL_New_member_Stats_dtl_di',
     default_args=default_args,
     description='Transfer Member Profile Data from MSSQL to PostgreSQL ODS and DWD',
     schedule_interval='0 12 * * *',  
