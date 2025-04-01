@@ -23,7 +23,7 @@ default_args = {
 
 def fetch_gold_api_data(**context):
     try:
-        api_key = 'goldapi-d4o4sm6akda96-io'
+        api_key = 'goldapi-346whsm6hkeukw-io'
         headers = {
             'x-access-token': api_key,
             'Content-Type': 'application/json'

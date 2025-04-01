@@ -5,7 +5,6 @@ from airflow.providers.microsoft.mssql.hooks.mssql import MsSqlHook
 from datetime import datetime
 import pandas as pd
 
-# กำหนดค่าเริ่มต้นสำหรับ DAG
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -13,7 +12,6 @@ default_args = {
     "retries": 1,
 }
 
-# สร้าง DAG
 dag = DAG(
     "ETL_profile_detail_DTL_DI",
     default_args=default_args,
@@ -22,7 +20,6 @@ dag = DAG(
     catchup=False,
 )
 
-# SQL Query จาก SQL Server (ใช้ query เดิมของคุณ)
 sqlserver_query = """
 --ProfileDetail
 use BWM_FIT_DB
@@ -150,13 +147,13 @@ def process_and_insert_data(rows):
     processed_rows = []
     for row in rows:
         row_list = list(row)
-        row_list.append(current_date)  # เพิ่ม inc_day
+        row_list.append(current_date) 
         processed_rows.append(tuple(row_list))
     
     try:
         # บันทึกข้อมูลลงในตาราง ODS
         ods_insert_query = """
-        INSERT INTO ods_profile_detail (
+        INSERT INTO ods_profile_detail_dtl_di (
             CUSTOMER_ID, KYC_LEVEL, SEX, MARITAL_STATUS, AGE, RANGE_AGE, EDUCATION, 
             MONTHLY_INCOME, RANGE_MONTHLY_INCOME, OCCUPATION_NAME, BUSINESS_TYPE, 
             HOME_ADDRESS, HOME_DISTRICT, WORK_ADDRESS, WORK_DISTRICT, WORK_DISTRICT_GROUP,
@@ -165,16 +162,14 @@ def process_and_insert_data(rows):
         """
         cur.executemany(ods_insert_query, processed_rows)
         
-        # ดึงข้อมูล create_date ที่มีอยู่ในตาราง DWD
-        cur.execute("SELECT create_date, customer_id FROM dwd_profile_detail")
+        cur.execute("SELECT create_date, customer_id FROM dwd_profile_detail_dtl_di")
         existing_records = {(str(row[0]), row[1]) for row in cur.fetchall()}
         
-        # แยกข้อมูลสำหรับ insert และ update
         rows_to_insert = []
         rows_to_update = []
         
         for row in processed_rows:
-            key = (str(row[16]), row[0])  # create_date และ customer_id
+            key = (str(row[16]), row[0]) 
             if key in existing_records:
                 rows_to_update.append(row)
             else:
@@ -183,7 +178,7 @@ def process_and_insert_data(rows):
         # Insert ข้อมูลใหม่
         if rows_to_insert:
             dwd_insert_query = """
-            INSERT INTO dwd_profile_detail (
+            INSERT INTO dwd_profile_detail_dtl_di (
                 CUSTOMER_ID, KYC_LEVEL, SEX, MARITAL_STATUS, AGE, RANGE_AGE, EDUCATION, 
                 MONTHLY_INCOME, RANGE_MONTHLY_INCOME, OCCUPATION_NAME, BUSINESS_TYPE, 
                 HOME_ADDRESS, HOME_DISTRICT, WORK_ADDRESS, WORK_DISTRICT, WORK_DISTRICT_GROUP,
@@ -196,7 +191,7 @@ def process_and_insert_data(rows):
         # Update ข้อมูลที่มีอยู่
         if rows_to_update:
             dwd_update_query = """
-            UPDATE dwd_profile_detail
+            UPDATE dwd_profile_detail_dtl_di
             SET 
                 KYC_LEVEL = %s, SEX = %s, MARITAL_STATUS = %s, AGE = %s, 
                 RANGE_AGE = %s, EDUCATION = %s, MONTHLY_INCOME = %s, 
@@ -209,7 +204,6 @@ def process_and_insert_data(rows):
             
             formatted_rows = []
             for row in rows_to_update:
-                # จัดเตรียมข้อมูลสำหรับ SET clause
                 update_data = [
                     row[1],   # KYC_LEVEL
                     row[2],   # SEX
@@ -236,8 +230,6 @@ def process_and_insert_data(rows):
                 formatted_rows.append(tuple(update_data))
             
             cur.executemany(dwd_update_query, formatted_rows)
-            
-        # Commit การเปลี่ยนแปลงทั้งหมด
         conn.commit()
     
     except Exception as e:
@@ -248,12 +240,10 @@ def process_and_insert_data(rows):
         cur.close()
         conn.close()
 
-# ฟังก์ชันสำหรับจัดการข้อมูล dim_province_iso โดยดึงข้อมูลจังหวัดจาก DWD
 def manage_dim_iso():
     """
     จัดการข้อมูลในตาราง dim_province_iso โดยใช้เฉพาะจังหวัดที่มีอยู่ในข้อมูล DWD
     """
-    # ข้อมูลรหัสจังหวัดตามมาตรฐาน ISO_3166-2:TH และชื่อจังหวัดภาษาไทย
     all_provinces = {
         "กรุงเทพมหานคร": "TH-10",
         "สมุทรปราการ": "TH-11",
@@ -339,7 +329,6 @@ def manage_dim_iso():
     cur = conn.cursor()
     
     try:
-        # สร้างตาราง dim_province_iso ถ้ายังไม่มี
         cur.execute("""
         CREATE TABLE IF NOT EXISTS dim_province_iso (
             province_code VARCHAR(10) PRIMARY KEY,
@@ -347,26 +336,22 @@ def manage_dim_iso():
         );
         """)
         
-        # ดึงข้อมูลจังหวัดที่มีอยู่ในตาราง dwd_profile_detail
-        # เปลี่ยนจาก HOME_DISTRICT และ WORK_DISTRICT เป็น HOME_ADDRESS และ WORK_ADDRESS
         cur.execute("""
-        SELECT DISTINCT HOME_ADDRESS FROM dwd_profile_detail
+        SELECT DISTINCT HOME_ADDRESS FROM dwd_profile_detail_dtl_di
         WHERE HOME_ADDRESS IS NOT NULL AND HOME_ADDRESS <> ''
         UNION
-        SELECT DISTINCT WORK_ADDRESS FROM dwd_profile_detail
+        SELECT DISTINCT WORK_ADDRESS FROM dwd_profile_detail_dtl_di
         WHERE WORK_ADDRESS IS NOT NULL AND WORK_ADDRESS <> ''
         """)
         
         dwd_addresses_raw = cur.fetchall()
         print(f"พบที่อยู่ทั้งหมด {len(dwd_addresses_raw)} รายการในข้อมูล DWD")
         
-        # ดึงรายชื่อจังหวัดจากที่อยู่
         dwd_provinces = set()
         for row in dwd_addresses_raw:
-            if row[0]:  # ตรวจสอบว่าไม่ใช่ค่า None
+            if row[0]: 
                 address = row[0].strip()
-                if address:  # ตรวจสอบว่าไม่ใช่สตริงว่าง
-                    # ค้นหาชื่อจังหวัดในที่อยู่
+                if address: 
                     for province_name in all_provinces:
                         if province_name in address:
                             dwd_provinces.add(province_name)
@@ -375,14 +360,10 @@ def manage_dim_iso():
         
         print(f"สกัดจังหวัดได้ {len(dwd_provinces)} จังหวัด")
         
-        # ลบข้อมูลเดิมในตาราง dim_province_iso เพื่อทำการอัพเดทใหม่
-        cur.execute("DELETE FROM dim_province_iso")  # ใช้ DELETE แทน TRUNCATE เพื่อความปลอดภัย
-        conn.commit()  # Commit หลังจากลบข้อมูลเพื่อป้องกันปัญหา transaction
+        cur.execute("DELETE FROM dim_province_iso") 
+        conn.commit()  
         
-        # เตรียมข้อมูลจังหวัดที่พบในข้อมูล DWD
         provinces_to_insert = []
-        
-        # จับคู่จังหวัดที่พบกับรหัส
         for province_name in dwd_provinces:
             if province_name in all_provinces:
                 province_code = all_provinces[province_name]
@@ -400,7 +381,7 @@ def manage_dim_iso():
                     VALUES (%s, %s)
                     """
                     cur.execute(insert_query, (province_code, province_name))
-                    conn.commit()  # Commit ทีละรายการ
+                    conn.commit() 
                     print(f"เพิ่มจังหวัด '{province_name}' (รหัส '{province_code}') สำเร็จ")
                 except Exception as e:
                     conn.rollback()
@@ -415,7 +396,6 @@ def manage_dim_iso():
         cur.close()
         conn.close()
 
-# กำหนด Tasks
 fetch_data_task = PythonOperator(
     task_id="fetch_sqlserver_data",
     python_callable=fetch_sqlserver_data,
@@ -435,5 +415,4 @@ manage_dim_iso_task = PythonOperator(
     dag=dag,
 )
 
-# กำหนดลำดับการทำงานของ Tasks
 fetch_data_task >> process_insert_task >> manage_dim_iso_task
